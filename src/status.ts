@@ -1,29 +1,31 @@
 export type ShipmentStatus = "posted" | "in_transit" | "out_for_delivery" | "delivered" | "exception";
 export type NormalizedStatus = ShipmentStatus | "unknown";
 
-const DIALECT: Record<string, ShipmentStatus> = {
-  posted: "posted",
-  postado: "posted",
-  collected: "posted",
-  in_transit: "in_transit",
-  "em transito": "in_transit",
-  "em trânsito": "in_transit",
-  transit: "in_transit",
-  out_for_delivery: "out_for_delivery",
-  "saiu para entrega": "out_for_delivery",
-  delivered: "delivered",
-  entregue: "delivered",
-  exception: "exception",
-  excecao: "exception",
-  "exceção": "exception",
-  failed: "exception",
-};
+// Map, não objeto literal: "constructor" ou "__proto__" não podem achar
+// propriedade herdada e virar status.
+const DIALECT = new Map<string, ShipmentStatus>([
+  ["posted", "posted"],
+  ["postado", "posted"],
+  ["collected", "posted"],
+  ["in_transit", "in_transit"],
+  ["em transito", "in_transit"],
+  ["em trânsito", "in_transit"],
+  ["transit", "in_transit"],
+  ["out_for_delivery", "out_for_delivery"],
+  ["saiu para entrega", "out_for_delivery"],
+  ["delivered", "delivered"],
+  ["entregue", "delivered"],
+  ["exception", "exception"],
+  ["excecao", "exception"],
+  ["exceção", "exception"],
+  ["failed", "exception"],
+]);
 
 // Texto que nenhuma transportadora conhecida usa vira "unknown". Unknown entra
 // no histórico mas nunca muda o status atual, e nunca vira "delivered".
 export function normalizeStatus(raw: string): NormalizedStatus {
   const key = raw.trim().toLowerCase().replace(/\s+/g, " ");
-  return DIALECT[key] ?? "unknown";
+  return DIALECT.get(key) ?? "unknown";
 }
 
 export type KnownEvent = { event_id: string; occurred_at: string; status: NormalizedStatus };
