@@ -81,4 +81,48 @@ describe("regressões da auditoria de rastreio", () => {
     expect(await response.json()).toMatchObject({ status: "in_transit", delayed: true });
     expect(await (await read(id)).json()).toMatchObject({ status: "in_transit", delayed: true });
   });
+  it("cadastros concorrentes do mesmo dono convergem para um envio e um registro externo", async () => {
+    const { db, aggregator, create } = setup();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    aggregator.registerEffect = () => gate;
+
+    const first = create();
+    const second = create();
+    // Dá às duas rotas a chance de chegar ao await externo. Não espera duas
+    // chamadas: a implementação corrigida deve chegar ao agregador só uma vez.
+    for (let turn = 0; turn < 50; turn += 1) await Promise.resolve();
+    release();
+    const responses = await Promise.all([first, second]);
+
+    expect(responses.map((response) => response.ok)).toEqual([true, true]);
+    const bodies = await Promise.all(responses.map((response) => response.json())) as Array<{ id: string }>;
+    expect(bodies[0].id).toBeTruthy();
+    expect(bodies[1].id).toBe(bodies[0].id);
+    expect(aggregator.registered).toEqual(["BR123"]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM shipments").get()).toMatchObject({ count: 1 });
+  });
+  it("permite retry depois que o agregador falha no primeiro cadastro", async () => {
+    const { db, aggregator, create, read } = setup();
+    aggregator.registerEffect = async () => { throw new Error("agregador indisponível"); };
+    expect((await create()).ok).toBe(false);
+    aggregator.registerEffect = async () => {};
+
+    const retry = await create();
+    expect(retry.ok).toBe(true);
+    const { id } = (await retry.json()) as { id: string };
+    expect((await read(id)).status).toBe(200);
+    expect(aggregator.registered).toEqual(["BR123", "BR123"]);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM shipments").get()).toMatchObject({ count: 1 });
+  });
+  it("recusa o mesmo código para outro dono sem alterar o envio existente", async () => {
+    const { db, aggregator, create, read } = setup();
+    const id = await shipmentId(create);
+    const before = db.prepare("SELECT * FROM shipments").all();
+
+    expect((await create("crt_bia")).status).toBe(409);
+    expect(db.prepare("SELECT * FROM shipments").all()).toEqual(before);
+    expect(await (await read(id)).json()).toMatchObject({ creator_id: "crt_ana" });
+    expect(aggregator.registered).toEqual(["BR123"]);
+  });
 });

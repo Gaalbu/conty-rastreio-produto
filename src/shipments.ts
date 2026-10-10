@@ -5,7 +5,7 @@ import { assessDelay } from "./delay.ts";
 import { currentStatus, normalizeStatus } from "./status.ts";
 import type { NormalizedStatus } from "./status.ts";
 
-export type Outcome = { status: 200 | 201 | 400 | 404; body: unknown };
+export type Outcome = { status: 200 | 201 | 400 | 404 | 409 | 502; body: unknown };
 
 type ShipmentRow = { id: string; tracking_code: string; creator_id: string; created_at: string };
 type EventRow = {
@@ -24,6 +24,22 @@ function findShipment(db: DatabaseSync, id: string): ShipmentRow | undefined {
   return db.prepare("SELECT * FROM shipments WHERE id = ?").get(id) as ShipmentRow | undefined;
 }
 
+// Cadastros em andamento por banco e código: o segundo request do mesmo código
+// espera o primeiro em vez de registrar de novo no agregador. Não há transação
+// aberta durante a chamada de rede.
+const inFlight = new WeakMap<DatabaseSync, Map<string, Promise<unknown>>>();
+
+function ownerOutcome(existing: ShipmentRow, creatorId: string): Outcome {
+  if (existing.creator_id !== creatorId) {
+    return { status: 409, body: { error: "código de rastreio já pertence a outro criador" } };
+  }
+  return { status: 200, body: existing };
+}
+
+function findByCode(db: DatabaseSync, code: string): ShipmentRow | undefined {
+  return db.prepare("SELECT * FROM shipments WHERE tracking_code = ?").get(code) as ShipmentRow | undefined;
+}
+
 export async function createShipment(
   db: DatabaseSync,
   aggregator: TrackingAggregator,
@@ -35,19 +51,34 @@ export async function createShipment(
   if (!code) return { status: 400, body: { error: "tracking_code é obrigatório" } };
   if (!creatorId) return { status: 400, body: { error: "creator_id é obrigatório" } };
 
-  const existing = db.prepare("SELECT * FROM shipments WHERE tracking_code = ?").get(code) as
-    | ShipmentRow
-    | undefined;
-  if (existing) return { status: 200, body: existing };
+  const pending = inFlight.get(db) ?? new Map<string, Promise<unknown>>();
+  inFlight.set(db, pending);
+  const running = pending.get(code);
+  if (running) await running.catch(() => {});
 
-  await aggregator.register(code);
+  const existing = findByCode(db, code);
+  if (existing) return ownerOutcome(existing, creatorId);
+
+  const registration = aggregator.register(code);
+  pending.set(code, registration);
+  try {
+    await registration;
+  } catch {
+    // Nada foi gravado: o próximo request tenta registrar de novo.
+    return { status: 502, body: { error: "agregador de rastreio indisponível" } };
+  } finally {
+    if (pending.get(code) === registration) pending.delete(code);
+  }
+
   const id = `shp_${randomUUID()}`;
-  db.prepare("INSERT INTO shipments (id, tracking_code, creator_id, created_at) VALUES (?, ?, ?, ?)").run(
-    id,
-    code,
-    creatorId,
-    now.toISOString(),
-  );
+  const inserted = db
+    .prepare(
+      `INSERT INTO shipments (id, tracking_code, creator_id, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (tracking_code) DO NOTHING`,
+    )
+    .run(id, code, creatorId, now.toISOString());
+  // Outro processo pode ter gravado o mesmo código enquanto o registro corria.
+  if (Number(inserted.changes) === 0) return ownerOutcome(findByCode(db, code)!, creatorId);
   return { status: 201, body: findShipment(db, id) };
 }
 
