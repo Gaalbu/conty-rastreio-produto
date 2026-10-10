@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { TrackingAggregator } from "./aggregator.ts";
+import type { RawTrackingEvent, TrackingAggregator } from "./aggregator.ts";
 import { assessDelay } from "./delay.ts";
 import { currentStatus, normalizeStatus } from "./status.ts";
 import type { NormalizedStatus } from "./status.ts";
@@ -82,10 +82,37 @@ export async function createShipment(
   return { status: 201, body: findShipment(db, id) };
 }
 
-function isoOrRaw(value: string): string {
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? value : new Date(parsed).toISOString();
+type ValidEvent = { id: string; occurred_at: string; raw_status: string; status: NormalizedStatus };
+
+// Instante legível vira ISO UTC; ilegível fica como veio e entra como unknown,
+// porque não dá para ordená-lo.
+function normalizeEvent(event: RawTrackingEvent): ValidEvent {
+  const parsed = Date.parse(event.occurred_at);
+  if (Number.isNaN(parsed)) {
+    return { id: event.id, occurred_at: event.occurred_at, raw_status: event.status, status: "unknown" };
+  }
+  return {
+    id: event.id,
+    occurred_at: new Date(parsed).toISOString(),
+    raw_status: event.status,
+    status: normalizeStatus(event.status),
+  };
 }
+
+function validateBatch(raw: unknown): { events: ValidEvent[] } | { error: string } {
+  if (!Array.isArray(raw)) return { error: "o agregador não devolveu uma lista" };
+  const events: ValidEvent[] = [];
+  for (const item of raw) {
+    const { id, occurred_at, status } = (item ?? {}) as Record<string, unknown>;
+    if (typeof id !== "string" || !id.trim()) return { error: "evento sem id" };
+    if (typeof occurred_at !== "string" || typeof status !== "string") return { error: `evento ${id} malformado` };
+    events.push(normalizeEvent({ id, occurred_at, status }));
+  }
+  return { events };
+}
+
+const sameEvent = (a: Pick<ValidEvent, "occurred_at" | "raw_status">, b: Pick<ValidEvent, "occurred_at" | "raw_status">) =>
+  a.occurred_at === b.occurred_at && a.raw_status === b.raw_status;
 
 export async function syncShipment(
   db: DatabaseSync,
@@ -97,7 +124,10 @@ export async function syncShipment(
   const shipment = findShipment(db, shipmentId);
   if (!shipment) return { status: 404, body: { error: "envio não encontrado" } };
 
-  const raw = await aggregator.events(shipment.tracking_code);
+  const batch = validateBatch(await aggregator.events(shipment.tracking_code));
+  if ("error" in batch) return { status: 502, body: { error: `resposta inválida do agregador: ${batch.error}` } };
+
+  const saved = db.prepare("SELECT occurred_at, raw_status FROM tracking_events WHERE shipment_id = ? AND event_id = ?");
   const insert = db.prepare(
     `INSERT INTO tracking_events (shipment_id, event_id, occurred_at, raw_status, status, received_at)
      VALUES (?, ?, ?, ?, ?, ?)
@@ -105,13 +135,22 @@ export async function syncShipment(
   );
   let inserted = 0;
   let duplicates = 0;
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
-    for (const event of raw) {
-      const occurredAt = isoOrRaw(event.occurred_at);
-      // Instante ilegível não ordena: o evento fica no histórico como unknown.
-      const status = Number.isNaN(Date.parse(occurredAt)) ? "unknown" : normalizeStatus(event.status);
-      const result = insert.run(shipmentId, event.id, occurredAt, event.status, status, now.toISOString());
+    // O mesmo id com conteúdo diferente, no lote ou contra o histórico, é
+    // conflito: o histórico é append-only e nenhum evento do lote é gravado.
+    // A checagem roda dentro da transação para outro processo não gravar no meio.
+    const seen = new Map<string, ValidEvent>();
+    for (const event of batch.events) {
+      const previous = seen.get(event.id) ?? (saved.get(shipmentId, event.id) as ValidEvent | undefined);
+      if (previous && !sameEvent(previous, event)) {
+        db.exec("ROLLBACK");
+        return { status: 409, body: { error: "evento já registrado com outro conteúdo", event_id: event.id } };
+      }
+      seen.set(event.id, event);
+    }
+    for (const event of batch.events) {
+      const result = insert.run(shipmentId, event.id, event.occurred_at, event.raw_status, event.status, now.toISOString());
       if (Number(result.changes) === 1) inserted += 1;
       else duplicates += 1;
     }

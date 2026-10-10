@@ -68,6 +68,7 @@ describe("regressões da auditoria de rastreio", () => {
       ],
     });
   });
+
   it("sync e GET aplicam o mesmo limite de 24 horas a um envio postado há 48 horas", async () => {
     const { aggregator, create, sync, read } = setup(24);
     const id = await shipmentId(create);
@@ -81,6 +82,7 @@ describe("regressões da auditoria de rastreio", () => {
     expect(await response.json()).toMatchObject({ status: "in_transit", delayed: true });
     expect(await (await read(id)).json()).toMatchObject({ status: "in_transit", delayed: true });
   });
+
   it("cadastros concorrentes do mesmo dono convergem para um envio e um registro externo", async () => {
     const { db, aggregator, create } = setup();
     let release!: () => void;
@@ -102,6 +104,7 @@ describe("regressões da auditoria de rastreio", () => {
     expect(aggregator.registered).toEqual(["BR123"]);
     expect(db.prepare("SELECT COUNT(*) AS count FROM shipments").get()).toMatchObject({ count: 1 });
   });
+
   it("permite retry depois que o agregador falha no primeiro cadastro", async () => {
     const { db, aggregator, create, read } = setup();
     aggregator.registerEffect = async () => { throw new Error("agregador indisponível"); };
@@ -115,6 +118,7 @@ describe("regressões da auditoria de rastreio", () => {
     expect(aggregator.registered).toEqual(["BR123", "BR123"]);
     expect(db.prepare("SELECT COUNT(*) AS count FROM shipments").get()).toMatchObject({ count: 1 });
   });
+
   it("recusa o mesmo código para outro dono sem alterar o envio existente", async () => {
     const { db, aggregator, create, read } = setup();
     const id = await shipmentId(create);
@@ -124,5 +128,58 @@ describe("regressões da auditoria de rastreio", () => {
     expect(db.prepare("SELECT * FROM shipments").all()).toEqual(before);
     expect(await (await read(id)).json()).toMatchObject({ creator_id: "crt_ana" });
     expect(aggregator.registered).toEqual(["BR123"]);
+  });
+
+  it("recusa replay conflitante sem persistir nenhum evento do lote", async () => {
+    const { db, aggregator, create, sync } = setup();
+    const id = await shipmentId(create);
+    aggregator.feed = [{ id: "ev_1", occurred_at: "2026-06-01T00:00:00Z", status: "postado" }];
+    expect((await sync(id)).status).toBe(200);
+    const before = db.prepare("SELECT * FROM tracking_events").all();
+    aggregator.feed = [
+      { id: "ev_2", occurred_at: "2026-06-02T00:00:00Z", status: "em trânsito" },
+      { id: "ev_1", occurred_at: "2026-06-01T00:00:00Z", status: "entregue" },
+    ];
+
+    expect((await sync(id)).status).toBe(409);
+    expect(db.prepare("SELECT * FROM tracking_events").all()).toEqual(before);
+  });
+
+  it("recusa ids conflitantes no próprio lote antes de gravar histórico parcial", async () => {
+    const { db, aggregator, create, sync } = setup();
+    const id = await shipmentId(create);
+    aggregator.feed = [
+      { id: "ev_1", occurred_at: "2026-06-01T00:00:00Z", status: "postado" },
+      { id: "ev_1", occurred_at: "2026-06-02T00:00:00Z", status: "entregue" },
+    ];
+
+    expect((await sync(id)).status).toBe(409);
+    expect(db.prepare("SELECT * FROM tracking_events").all()).toEqual([]);
+  });
+
+  it("deduplica o mesmo evento com representações equivalentes do instante", async () => {
+    const { db, aggregator, create, sync } = setup();
+    const id = await shipmentId(create);
+    aggregator.feed = [{ id: "ev_1", occurred_at: "2026-06-01T12:00:00.000Z", status: "postado" }];
+    expect((await sync(id)).status).toBe(200);
+    const before = db.prepare("SELECT * FROM tracking_events").all();
+    aggregator.feed = [{ id: "ev_1", occurred_at: "2026-06-01T09:00:00-03:00", status: "postado" }];
+
+    const replay = await sync(id);
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ inserted: 0, duplicates: 1 });
+    expect(db.prepare("SELECT * FROM tracking_events").all()).toEqual(before);
+  });
+});
+
+describe("lote malformado do agregador", () => {
+  it("evento sem id ou com campos que não são texto dá 502 e não grava nada", async () => {
+    const { db, aggregator, create, sync } = setup();
+    const id = await shipmentId(create);
+    for (const bad of [{ occurred_at: "2026-06-01T00:00:00Z", status: "postado" }, { id: "ev_x", occurred_at: 1, status: "postado" }]) {
+      aggregator.feed = [{ id: "ev_ok", occurred_at: "2026-06-01T00:00:00Z", status: "postado" }, bad as unknown as RawTrackingEvent];
+      expect((await sync(id)).status).toBe(502);
+    }
+    expect(db.prepare("SELECT COUNT(*) AS count FROM tracking_events").get()).toEqual({ count: 0 });
   });
 });
