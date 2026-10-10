@@ -35,7 +35,7 @@ Comece a leitura por [`src/status.ts`](src/status.ts) e [`src/delay.ts`](src/del
 
 ## Como rodar
 
-Node 22 ou maior.
+Node 22.13 ou maior (primeira versão com `node:sqlite` sem flag).
 
 ```bash
 npm install
