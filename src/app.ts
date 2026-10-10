@@ -27,7 +27,7 @@ export function createApp(deps: {
   });
 
   app.post("/shipments/:id/sync", async (c) => {
-    const outcome = await syncShipment(db, aggregator, c.req.param("id"), now());
+    const outcome = await syncShipment(db, aggregator, c.req.param("id"), now(), limitHours);
     return c.json(outcome.body, outcome.status);
   });
 

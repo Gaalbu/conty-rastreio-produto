@@ -68,4 +68,17 @@ describe("regressões da auditoria de rastreio", () => {
       ],
     });
   });
+  it("sync e GET aplicam o mesmo limite de 24 horas a um envio postado há 48 horas", async () => {
+    const { aggregator, create, sync, read } = setup(24);
+    const id = await shipmentId(create);
+    aggregator.feed = [
+      { id: "ev_posted", occurred_at: "2026-06-01T00:00:00Z", status: "postado" },
+      { id: "ev_transit", occurred_at: "2026-06-02T00:00:00Z", status: "em trânsito" },
+    ];
+
+    const response = await sync(id);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ status: "in_transit", delayed: true });
+    expect(await (await read(id)).json()).toMatchObject({ status: "in_transit", delayed: true });
+  });
 });

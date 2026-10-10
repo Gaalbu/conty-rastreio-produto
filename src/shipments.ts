@@ -61,6 +61,7 @@ export async function syncShipment(
   aggregator: TrackingAggregator,
   shipmentId: string,
   now: Date,
+  limitHours?: number,
 ): Promise<Outcome> {
   const shipment = findShipment(db, shipmentId);
   if (!shipment) return { status: 404, body: { error: "envio não encontrado" } };
@@ -88,7 +89,7 @@ export async function syncShipment(
     db.exec("ROLLBACK");
     throw error;
   }
-  return { status: 200, body: { inserted, duplicates, ...readShipment(db, shipmentId, now) } };
+  return { status: 200, body: { inserted, duplicates, ...readShipment(db, shipmentId, now, limitHours) } };
 }
 
 export function readShipment(db: DatabaseSync, shipmentId: string, now: Date, limitHours?: number) {
