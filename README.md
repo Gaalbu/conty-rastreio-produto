@@ -15,11 +15,11 @@ Comece a leitura por [`src/status.ts`](src/status.ts) e [`src/delay.ts`](src/del
 | `saiu para entrega` | `out_for_delivery` |
 | `entregue` | `delivered` |
 | `excecao`, `exceção`, `failed` | `exception` |
-| qualquer outro, ex. `TELEPORTADO` | `unknown` |
+| qualquer outro, ex. `TELEPORTADO`, `constructor` | `unknown` |
 
 `unknown` entra no histórico e nunca muda o status atual, nem vira `delivered`.
 
-**Histórico:** append-only, chave única `(shipment_id, event_id)`. O mesmo evento em dois sync não gera segunda linha.
+**Histórico:** append-only, chave única `(shipment_id, event_id)`. O mesmo evento em dois sync não gera segunda linha, mesmo com o instante escrito em outro fuso (`occurred_at` é gravado em ISO UTC). O mesmo id com outro instante ou outro status, no lote ou contra o histórico, é `409` e nada do lote é gravado. Lote malformado (evento sem id, campos que não são texto) é `502`.
 
 **Status atual:** entre os eventos cujo status normalizado não é `unknown`, o de maior `occurred_at`, recalculado a partir do histórico inteiro. Um `in_transit` antigo que chega depois de um `delivered` fica no histórico e não faz o pacote regredir.
 
@@ -32,6 +32,10 @@ Comece a leitura por [`src/status.ts`](src/status.ts) e [`src/delay.ts`](src/del
 - senão → não atrasado, `ainda dentro do limite desde a postagem`
 
 **Agregador:** `src/aggregator.ts` define `TrackingAggregator` (`register`, `events`). O teste passa um fake; `npm run dev` passa um fake com uma viagem curta. Só `normalizeStatus` conhece o texto bruto.
+
+**Cadastro:** o mesmo código para o mesmo criador devolve o envio existente (200); para outro criador, `409`. Dois cadastros simultâneos do mesmo código registram no agregador uma vez só: o segundo espera o primeiro, sem transação aberta durante a chamada de rede. Se o agregador falhar, a resposta é `502`, nada é gravado e o retry funciona.
+
+**Limite:** `TRANSIT_LIMIT_HOURS` vale igual para o `GET` e para a resposta do sync.
 
 ## Como rodar
 
@@ -88,8 +92,8 @@ Várias transportadoras de verdade e webhook push. A consulta é pull, no sync.
 
 Comece por `src/status.ts` e `src/delay.ts`. O status atual é o evento conhecido de maior `occurred_at`, recalculado do histórico inteiro, e não o último que chegou: um `in_transit` de ontem que chega depois do `delivered` de hoje fica no histórico e o pacote continua entregue. Texto que nenhuma transportadora usa, como `TELEPORTADO`, vira `unknown`, entra no histórico com o texto bruto e nunca muda o status nem vira entregue. O histórico é append-only com chave única `(shipment_id, event_id)`, então repetir o sync não duplica. O atraso é função pura com `now` vindo da query: entregue não atrasa, exceção da transportadora não é atraso de trânsito, e o limite padrão é 120 h desde a postagem (48 h não atrasa, 121 h atrasa).
 
-Testes: `npm test` com 8 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste do evento atrasado.
+Testes: `npm test` com 18 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste do evento atrasado.
 
 Ficou de fora: várias transportadoras de verdade e webhook push.
 
-IA: código, testes e README escritos com assistente de código (Claude Code), a partir de um plano com as regras do desafio. O assistente rodou os testes e o typecheck e colou a resposta real acima.
+IA: código, testes e README escritos com assistente de código (Claude Code), a partir de um plano com as regras do desafio. As correções de status herdado, limite no sync, cadastro concorrente e conflito de eventos vieram de programação em pares: o Codex auditou a entrega e escreveu os testes que reproduziam os defeitos; o Claude Code implementou, validou e publicou.
