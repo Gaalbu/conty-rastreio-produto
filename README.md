@@ -37,6 +37,8 @@ Comece a leitura por [`src/status.ts`](src/status.ts) e [`src/delay.ts`](src/del
 
 **Limite:** `TRANSIT_LIMIT_HOURS` vale igual para o `GET` e para a resposta do sync.
 
+**Entrada:** corpo precisa ser `application/json` (senão 415), JSON válido e objeto (senão 400) e ter até 64 KB (senão 413). Campo fora do contrato da rota → 400 com o nome do campo. Erro inesperado vira `500 {"error":"erro interno"}`, sem stack na resposta.
+
 ## Como rodar
 
 Node 22.13 ou maior (primeira versão com `node:sqlite` sem flag).
@@ -92,7 +94,7 @@ Várias transportadoras de verdade e webhook push. A consulta é pull, no sync.
 
 Comece por `src/status.ts` e `src/delay.ts`. O status atual é o evento conhecido de maior `occurred_at`, recalculado do histórico inteiro, e não o último que chegou: um `in_transit` de ontem que chega depois do `delivered` de hoje fica no histórico e o pacote continua entregue. Texto que nenhuma transportadora usa, como `TELEPORTADO`, vira `unknown`, entra no histórico com o texto bruto e nunca muda o status nem vira entregue. O histórico é append-only com chave única `(shipment_id, event_id)`, então repetir o sync não duplica. O atraso é função pura com `now` vindo da query: entregue não atrasa, exceção da transportadora não é atraso de trânsito, e o limite padrão é 120 h desde a postagem (48 h não atrasa, 121 h atrasa).
 
-Testes: `npm test` com 18 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste do evento atrasado.
+Testes: `npm test` com 23 passando, `npm run typecheck` sem erro. O exemplo deste README é o request do teste do evento atrasado.
 
 Ficou de fora: várias transportadoras de verdade e webhook push.
 
