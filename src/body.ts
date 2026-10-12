@@ -3,11 +3,13 @@ import type { Context } from "hono";
 export const MAX_BODY_BYTES = 64 * 1024;
 
 export class BodyError extends Error {
-  constructor(
-    readonly status: 400 | 415,
-    readonly payload: Record<string, unknown>,
-  ) {
+  readonly status: 400 | 415;
+  readonly payload: Record<string, unknown>;
+
+  constructor(status: 400 | 415, payload: Record<string, unknown>) {
     super(String(payload.error));
+    this.status = status;
+    this.payload = payload;
   }
 }
 
