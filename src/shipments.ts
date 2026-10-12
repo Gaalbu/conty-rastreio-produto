@@ -124,7 +124,14 @@ export async function syncShipment(
   const shipment = findShipment(db, shipmentId);
   if (!shipment) return { status: 404, body: { error: "envio não encontrado" } };
 
-  const batch = validateBatch(await aggregator.events(shipment.tracking_code));
+  let raw: unknown;
+  try {
+    raw = await aggregator.events(shipment.tracking_code);
+  } catch {
+    // Prazo estourado ou falha do agregador: nada é gravado e o sync pode ser repetido.
+    return { status: 502, body: { error: "agregador de rastreio indisponível" } };
+  }
+  const batch = validateBatch(raw);
   if ("error" in batch) return { status: 502, body: { error: `resposta inválida do agregador: ${batch.error}` } };
 
   const saved = db.prepare("SELECT occurred_at, raw_status FROM tracking_events WHERE shipment_id = ? AND event_id = ?");
