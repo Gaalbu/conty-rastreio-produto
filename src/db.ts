@@ -9,6 +9,15 @@ CREATE TABLE IF NOT EXISTS shipments (
 );
 
 -- Histórico append-only: evento nunca é atualizado nem apagado.
+-- Aviso de atraso: no máximo um por envio, encerrado quando o pacote é entregue.
+CREATE TABLE IF NOT EXISTS delay_alerts (
+  shipment_id TEXT PRIMARY KEY REFERENCES shipments(id),
+  alerted_at TEXT NOT NULL,
+  limit_hours REAL NOT NULL,
+  reason TEXT NOT NULL,
+  resolved_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS tracking_events (
   shipment_id TEXT NOT NULL REFERENCES shipments(id),
   event_id TEXT NOT NULL,
