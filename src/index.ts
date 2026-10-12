@@ -25,6 +25,7 @@ const app = createApp({
   db: openDatabase(),
   aggregator: demoAggregator,
   limitHours: Number.isFinite(limit) && limit > 0 ? limit : DEFAULT_TRANSIT_LIMIT_HOURS,
+  aggregatorTimeoutMs: Number(process.env.AGGREGATOR_TIMEOUT_MS) > 0 ? Number(process.env.AGGREGATOR_TIMEOUT_MS) : undefined,
 });
 
 serve({ fetch: app.fetch, port }, (info) => {

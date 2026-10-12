@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { body, BodyError, MAX_BODY_BYTES } from "./body.ts";
+import { DEFAULT_AGGREGATOR_TIMEOUT_MS, withDeadline } from "./aggregator.ts";
 import type { TrackingAggregator } from "./aggregator.ts";
 import { DEFAULT_TRANSIT_LIMIT_HOURS } from "./delay.ts";
 import { createShipment, readShipment, syncShipment } from "./shipments.ts";
@@ -11,8 +12,10 @@ export function createApp(deps: {
   aggregator: TrackingAggregator;
   limitHours?: number;
   now?: () => Date;
+  aggregatorTimeoutMs?: number;
 }) {
-  const { db, aggregator } = deps;
+  const { db } = deps;
+  const aggregator = withDeadline(deps.aggregator, deps.aggregatorTimeoutMs ?? DEFAULT_AGGREGATOR_TIMEOUT_MS);
   const limitHours = deps.limitHours ?? DEFAULT_TRANSIT_LIMIT_HOURS;
   const now = deps.now ?? (() => new Date());
   const app = new Hono();
