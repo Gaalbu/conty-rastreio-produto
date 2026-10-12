@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { body, BodyError, MAX_BODY_BYTES } from "./body.ts";
+import { listAlerts, runDelayCheck } from "./alerts.ts";
 import { DEFAULT_AGGREGATOR_TIMEOUT_MS, withDeadline } from "./aggregator.ts";
 import type { TrackingAggregator } from "./aggregator.ts";
 import { DEFAULT_TRANSIT_LIMIT_HOURS } from "./delay.ts";
@@ -36,6 +37,19 @@ export function createApp(deps: {
   app.post("/shipments/:id/sync", async (c) => {
     const outcome = await syncShipment(db, aggregator, c.req.param("id"), now(), limitHours);
     return c.json(outcome.body, outcome.status);
+  });
+
+  app.post("/delay-checks", (c) => {
+    const query = c.req.query("now");
+    const at = query === undefined ? now() : new Date(query);
+    if (Number.isNaN(at.getTime())) return c.json({ error: "now inválido" }, 400);
+    return c.json(runDelayCheck(db, at, limitHours));
+  });
+
+  app.get("/alerts", (c) => {
+    const include = c.req.query("include_resolved") ?? "false";
+    if (include !== "true" && include !== "false") return c.json({ error: "include_resolved deve ser true ou false" }, 400);
+    return c.json({ alerts: listAlerts(db, include === "true") });
   });
 
   app.get("/shipments/:id", (c) => {
