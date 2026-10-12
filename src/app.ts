@@ -60,5 +60,7 @@ export function createApp(deps: {
     return shipment ? c.json(shipment) : c.json({ error: "envio não encontrado" }, 404);
   });
 
+  app.notFound((c) => c.json({ error: "rota não encontrada" }, 404));
+
   return app;
 }
